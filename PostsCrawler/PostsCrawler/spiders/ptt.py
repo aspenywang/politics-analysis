@@ -19,6 +19,7 @@ class pttSpider(scrapy.Spider):
     _pagesScrapped = 0
     _pagesFailed = 0
     MAX_PAGES = 1
+    _pages = 0
     _posts = 0
 
     def parse(self, response):
@@ -62,7 +63,7 @@ class pttSpider(scrapy.Spider):
             item['title'] = response.css('#main-content > div:nth-child(3) > span.article-meta-value::text').get()
             item['author'] = response.css('#main-content > div:nth-child(1) > span.article-meta-value::text').get()
             dt_str = response.css('#main-content > div:nth-child(4) > span.article-meta-value::text').get()
-            item['date'] = datetime.datetime.strptime(dt_str, '%a %b %d %H:%M:%S %Y')
+            item['date'] = datetime.datetime.strptime(dt_str, '%a %b %d %H:%M:%S %Y').strftime('%a %b %d %H:%M:%S %Y')
             item['content'] = response.xpath("//*[@id='main-content']/text()[not(ancestor::div[contains(@class, 'push')]) and normalize-space()]").getall()
 
 
