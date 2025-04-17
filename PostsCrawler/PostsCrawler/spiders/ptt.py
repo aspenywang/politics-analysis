@@ -1,78 +1,105 @@
 import logging
+
+from scrapy import FormRequest
+from scrapy.exceptions import CloseSpider
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+from ..items import pttItem
 import pytz
 import scrapy
 import re
 
-from scrapy import FormRequest
-from scrapy.exceptions import CloseSpider
-
-from .. import settings
-from ..items import pttItem
-
-
 class pttSpider(scrapy.Spider):
+    MAX_RETRY = 5
     name = "ptt"
     allowed_domains = ["ptt.cc"]
-    boards = ['Gossiping', 'Stock', 'HatePolitics']
-    start_urls = ('https://www.ptt.cc/bbs/%s/index.html' % x for x in boards)
     _retries = 0
-    MAX_RETRY = 3
-    _pagesScrapped = 0
-    _pagesFailed = 0
-    _pages = 0
-    _posts = 0
+    UTC8 = ZoneInfo("Asia/Taipei")
+    MAX_AGE = timedelta(hours=5)
 
-
-    # Scrapy-specific settings override
     custom_settings = {
-        'LOG_LEVEL': 'WARNING',
-        'DOWNLOAD_DELAY': 0.01,
+        'DOWNLOAD_DELAY': 0.05,
         'CONCURRENT_REQUESTS': 16,
         'CONCURRENT_REQUESTS_PER_DOMAIN': 8,
         'AUTOTHROTTLE_ENABLED': True
     }
+    boards = ["Gossiping", 'HatePolitics', 'Stock']
+    finished_boards: set[str] = set()
+
+    def start_requests(self):
+        for board in self.boards:
+            url = f"https://www.ptt.cc/bbs/{board}/index.html"
+            yield scrapy.Request(url, callback=self.parse,
+                                 meta={"board": board, "page": 0})
+
+
+
     def parse(self, response):
+        board = response.meta.get("board")       # defensive lookup
+        if board in self.finished_boards:
+            self.logger.info(f'board: {board} is finished')
+            return
+        # ---------- 1. Over‑18 gate ----------
         if response.xpath('//div[@class="over18-notice"]'):
-            if self._retries < pttSpider.MAX_RETRY:
+            if self._retries < self.MAX_RETRY:
                 self._retries += 1
-                logging.warning(f'retry {self._retries} times...')
-                yield FormRequest.from_response(response,
-                                                formdata={'yes': 'yes'},
-                                                callback=self.parse)
+                yield FormRequest.from_response(
+                    response,
+                    formdata={"yes": "yes"},
+                    callback=self.parse,
+                    meta=response.meta,          # <── keep everything
+                    dont_filter=True             # avoid “duplicate request” filter
+                )
             else:
-                logging.warning('Over 18 verification failed.')
+                self.logger.warning("Over‑18 verification failed.")
+            return                                 # nothing else to do yet
+
+        # ---------- 2. Parse the index ----------
+        titles = (response.xpath("//div[@class='r-list-sep']/preceding::div[@class='title']/a/@href")
+                  or response.xpath("//div[@class='title']/a/@href"))
+
+        for href in titles:
+            if board in self.finished_boards:
+                break                      # we decided to stop while iterating titles
+            yield scrapy.Request(
+                response.urljoin(href.get()),
+                callback=self.parse_post,
+                meta={"board": board}
+            )
+
+        # ⬇ run this only if we are still crawling this board
+        if board not in self.finished_boards:
+            next_page = response.xpath(
+                '//*[@id="action-bar-container"]/div/div[2]/a[2]/@href'
+            ).get()
+            if next_page:
+                yield scrapy.Request(
+                    response.urljoin(next_page),
+                    callback=self.parse,
+                    meta=response.meta
+                )
+
+
+
+    def parse_post(self, response):
+        board = response.meta["board"]
+        if board in self.finished_boards:
+            return
+        # read post time of the *last* post we just opened
+        dt_str = response.css('#main-content > div:nth-child(4) > span.article-meta-value::text').get()
+        post_dt = datetime.strptime(dt_str, '%a %b %d %H:%M:%S %Y').replace(tzinfo=self.UTC8)
+
+        if datetime.now(self.UTC8) - post_dt > self.MAX_AGE :
+            self.logger.info(f"[{board}] reached 24‑hour cutoff; stopping this board")
+            self.finished_boards.add(board)
+            if len(self.finished_boards) >= len(self.boards):
+                raise CloseSpider(reason="Finished Parsing All Posts in the Past 24 hours.")
+            return
         else:
-
-            if response.xpath("//div[@class='r-list-sep']"):
-                titles = response.xpath("//div[@class='r-list-sep']/preceding::div[@class='title']/a/@href")
-            else:
-                titles = response.xpath("//div[@class='title']/a/@href")
-
-            for href in titles:
-                yield scrapy.Request(response.urljoin(href.get()), callback=self.parse_content)
-
-                next_page = response.xpath(
-                    '//*[@id="action-bar-container"]/div/div[2]/a[2]/@href').get()
-                if next_page:
-                    url = response.urljoin(next_page)
-                    logging.warning('follow {}'.format(url))
-                    self._pages += 1
-                    yield scrapy.Request(url, self.parse)
-
-
-    def parse_content(self, response):
-        try:
-            dt_str = response.css('#main-content > div:nth-child(4) > span.article-meta-value::text').get()
             post_dt = datetime.strptime(dt_str, '%a %b %d %H:%M:%S %Y').replace(tzinfo=pytz.timezone('Asia/Taipei'))
-            now = datetime.now(pytz.timezone('Asia/Taipei'))
-
-            # End Spider if post older than time threshold.
-            if now - post_dt > timedelta(hours=24):
-                raise CloseSpider(reason="Reached posts older than 24 hours")
 
             item = pttItem()
-            item['board'] = response.css('#main-content > div:nth-child(2) > span.article-meta-value::text').get()
+            item['board'] = board
             item['title'] = response.css('#main-content > div:nth-child(3) > span.article-meta-value::text').get()
             item['author'] = response.css('#main-content > div:nth-child(1) > span.article-meta-value::text').get()
             item['date'] = post_dt.strftime('%a %b %d %H:%M:%S %Y')
@@ -115,17 +142,8 @@ class pttSpider(scrapy.Spider):
             item['comments'] = comments
             item['score'] = total_score
             item['url'] = response.url
-            self._posts += 1
             yield item
 
-        except CloseSpider:
-            raise
-
-        except Exception as e:
-            _pagesFailed = 0
-
-            logging.error(f"Failed to parse {response.url}: {e}")
-            return
 
 
 
