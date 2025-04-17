@@ -1,31 +1,33 @@
-# Define your item pipelines here
-#
-# Don't forget to add your pipeline to the ITEM_PIPELINES setting
-# See: https://docs.scrapy.org/en/latest/topics/item-pipeline.html
-
-
-# useful for handling different item types with a single interface
-from itemadapter import ItemAdapter
-
-
 import json
+import os
 
 class PostscrawlerPipeline:
     def open_spider(self, spider):
-        self.file = open('posts.json', 'w', encoding='utf-8')
-        self.file.write('[\n')  # Start JSON array
-        self.first_item = True
+        self.files = {}  # Dictionary to hold open file handles
+        self.first_items = {}  # To track commas per file
+        os.makedirs("output", exist_ok=True)
 
     def close_spider(self, spider):
-        self.file.write('\n]')
-        self.file.close()
+        for file in self.files.values():
+            file.write('\n]')
+            file.close()
 
     def process_item(self, item, spider):
-        if not self.first_item:
-            self.file.write(',\n')
+        board = item.get('board', 'Unknown')
+
+        if board not in self.files:
+            file_path = f'output/{board}.json'
+            f = open(file_path, 'w', encoding='utf-8')
+            f.write('[\n')
+            self.files[board] = f
+            self.first_items[board] = True
+
+        f = self.files[board]
+        if not self.first_items[board]:
+            f.write(',\n')
         else:
-            self.first_item = False
+            self.first_items[board] = False
 
         line = json.dumps(dict(item), ensure_ascii=False)
-        self.file.write(line)
+        f.write(line)
         return item

@@ -14,7 +14,8 @@ from ..items import pttItem
 class pttSpider(scrapy.Spider):
     name = "ptt"
     allowed_domains = ["ptt.cc"]
-    start_urls = ('https://www.ptt.cc/bbs/%s/index.html' % settings.BOARD_NAME,)
+    boards = ['Gossiping', 'Stock', 'HatePolitics']
+    start_urls = ('https://www.ptt.cc/bbs/%s/index.html' % x for x in boards)
     _retries = 0
     MAX_RETRY = 3
     _pagesScrapped = 0
@@ -22,8 +23,10 @@ class pttSpider(scrapy.Spider):
     _pages = 0
     _posts = 0
 
+
     # Scrapy-specific settings override
     custom_settings = {
+        'LOG_LEVEL': 'WARNING',
         'DOWNLOAD_DELAY': 0.01,
         'CONCURRENT_REQUESTS': 16,
         'CONCURRENT_REQUESTS_PER_DOMAIN': 8,
@@ -64,8 +67,10 @@ class pttSpider(scrapy.Spider):
             post_dt = datetime.strptime(dt_str, '%a %b %d %H:%M:%S %Y').replace(tzinfo=pytz.timezone('Asia/Taipei'))
             now = datetime.now(pytz.timezone('Asia/Taipei'))
 
-            if now - post_dt > timedelta(hours=1):
+            # End Spider if post older than time threshold.
+            if now - post_dt > timedelta(hours=24):
                 raise CloseSpider(reason="Reached posts older than 24 hours")
+
             item = pttItem()
             item['board'] = response.css('#main-content > div:nth-child(2) > span.article-meta-value::text').get()
             item['title'] = response.css('#main-content > div:nth-child(3) > span.article-meta-value::text').get()

@@ -7,10 +7,8 @@ import time
 from Proxy.proxy import Proxy
 
 BOT_NAME = "PostsCrawler"
-LOG_LEVEL = 'WARNING'
 SPIDER_MODULES = ["PostsCrawler.spiders"]
 NEWSPIDER_MODULE = "PostsCrawler.spiders"
-BOARD_NAME = 'Gossiping'
 
 # Crawl responsibly by identifying yourself (and your website) on the user-agent
 #USER_AGENT = "PostsCrawler (+http://www.yourdomain.com)"
@@ -29,22 +27,22 @@ PROXY_LIST = []
 # Open the CSV file with proper encoding handling
 
 # Then process the proxies list
-PROXY_LIST = []
-proxy_fetcher = Proxy()
-proxy_fetcher.test_url = "https://www.ptt.cc/bbs/index.html"
-proxy_fetcher.speed_threshold = 3
-
-proxy_file = "./Proxy/proxies_list.txt"
-
-# Check if the file exists and its last modification time
-if not os.path.exists(proxy_file) or (time.time() - os.path.getmtime(proxy_file)) > 3600:
-    asyncio.run(proxy_fetcher.get_proxy_list())
-
-# Read the proxy list from the file
-with open(proxy_file, "r") as f:
-    data = f.readlines()
-    for proxy in data:
-        PROXY_LIST.append(proxy.strip())
+# PROXY_LIST = []
+# proxy_fetcher = Proxy()
+# proxy_fetcher.test_url = "https://www.ptt.cc/bbs/index.html"
+# proxy_fetcher.speed_threshold = 3
+#
+# proxy_file = "Proxy/proxies_list.txt"
+#
+# # Check if the file exists and its last modification time
+# if not os.path.exists(proxy_file) or (time.time() - os.path.getmtime(proxy_file)) > 3600:
+#     asyncio.run(proxy_fetcher.get_proxy_list())
+#
+# # Read the proxy list from the file
+# with open(proxy_file, "r") as f:
+#     data = f.readlines()
+#     for proxy in data:
+#         PROXY_LIST.append(proxy.strip())
 
 # Configure maximum concurrent requests performed by Scrapy (default: 16)
 #CONCURRENT_REQUESTS = 32
