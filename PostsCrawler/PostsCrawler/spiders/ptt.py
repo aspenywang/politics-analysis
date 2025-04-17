@@ -1,9 +1,11 @@
 import logging
-import datetime
+from datetime import datetime, timedelta
+import pytz
 import scrapy
 import re
 
 from scrapy import FormRequest
+from scrapy.exceptions import CloseSpider
 
 from .. import settings
 from ..items import pttItem
@@ -15,13 +17,18 @@ class pttSpider(scrapy.Spider):
     start_urls = ('https://www.ptt.cc/bbs/%s/index.html' % settings.BOARD_NAME,)
     _retries = 0
     MAX_RETRY = 3
-    DOWNLOAD_DELAY = 0.5
     _pagesScrapped = 0
     _pagesFailed = 0
-    MAX_PAGES = 1
     _pages = 0
     _posts = 0
 
+    # Scrapy-specific settings override
+    custom_settings = {
+        'DOWNLOAD_DELAY': 0.01,
+        'CONCURRENT_REQUESTS': 16,
+        'CONCURRENT_REQUESTS_PER_DOMAIN': 8,
+        'AUTOTHROTTLE_ENABLED': True
+    }
     def parse(self, response):
         if response.xpath('//div[@class="over18-notice"]'):
             if self._retries < pttSpider.MAX_RETRY:
@@ -42,7 +49,6 @@ class pttSpider(scrapy.Spider):
             for href in titles:
                 yield scrapy.Request(response.urljoin(href.get()), callback=self.parse_content)
 
-            if self._pages < pttSpider.MAX_PAGES:
                 next_page = response.xpath(
                     '//*[@id="action-bar-container"]/div/div[2]/a[2]/@href').get()
                 if next_page:
@@ -50,20 +56,21 @@ class pttSpider(scrapy.Spider):
                     logging.warning('follow {}'.format(url))
                     self._pages += 1
                     yield scrapy.Request(url, self.parse)
-                else:
-                    logging.warning('no next page')
-            else:
-                logging.warning('max pages reached')
 
 
     def parse_content(self, response):
         try:
+            dt_str = response.css('#main-content > div:nth-child(4) > span.article-meta-value::text').get()
+            post_dt = datetime.strptime(dt_str, '%a %b %d %H:%M:%S %Y').replace(tzinfo=pytz.timezone('Asia/Taipei'))
+            now = datetime.now(pytz.timezone('Asia/Taipei'))
+
+            if now - post_dt > timedelta(hours=1):
+                raise CloseSpider(reason="Reached posts older than 24 hours")
             item = pttItem()
             item['board'] = response.css('#main-content > div:nth-child(2) > span.article-meta-value::text').get()
             item['title'] = response.css('#main-content > div:nth-child(3) > span.article-meta-value::text').get()
             item['author'] = response.css('#main-content > div:nth-child(1) > span.article-meta-value::text').get()
-            dt_str = response.css('#main-content > div:nth-child(4) > span.article-meta-value::text').get()
-            item['date'] = datetime.datetime.strptime(dt_str, '%a %b %d %H:%M:%S %Y').strftime('%a %b %d %H:%M:%S %Y')
+            item['date'] = post_dt.strftime('%a %b %d %H:%M:%S %Y')
             item['content'] = response.xpath("//*[@id='main-content']/text()[not(ancestor::div[contains(@class, 'push')]) and normalize-space()]").getall()
 
 
@@ -105,6 +112,9 @@ class pttSpider(scrapy.Spider):
             item['url'] = response.url
             self._posts += 1
             yield item
+
+        except CloseSpider:
+            raise
 
         except Exception as e:
             _pagesFailed = 0
