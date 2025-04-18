@@ -1,4 +1,3 @@
-import logging
 
 from scrapy import FormRequest
 from scrapy.exceptions import CloseSpider
@@ -15,7 +14,7 @@ class pttSpider(scrapy.Spider):
     allowed_domains = ["ptt.cc"]
     _retries = 0
     UTC8 = ZoneInfo("Asia/Taipei")
-    MAX_AGE = timedelta(hours=5)
+    MAX_AGE = timedelta(hours=1)
 
     custom_settings = {
         'DOWNLOAD_DELAY': 0.05,
@@ -55,10 +54,13 @@ class pttSpider(scrapy.Spider):
             return                                 # nothing else to do yet
 
         # ---------- 2. Parse the index ----------
-        titles = (response.xpath("//div[@class='r-list-sep']/preceding::div[@class='title']/a/@href")
-                  or response.xpath("//div[@class='title']/a/@href"))
+        # replace the titles line in parse()
+        hrefs = response.xpath('//div[@class="r-ent"][following-sibling::div[@class="r-list-sep"]]/div[@class="title"]/a/@href') \
+            if response.xpath("//div[@class='r-list-sep']") \
+            else response.xpath("//div[@class='title']/a/@href")
 
-        for href in titles:
+
+        for href in hrefs:
             if board in self.finished_boards:
                 break                      # we decided to stop while iterating titles
             yield scrapy.Request(
@@ -79,70 +81,69 @@ class pttSpider(scrapy.Spider):
                     meta=response.meta
                 )
 
-
+        if len(self.finished_boards) >= len(self.boards):
+            raise CloseSpider(reason= 'Finished Parsing All Posts from the past 24 hours.')
 
     def parse_post(self, response):
         board = response.meta["board"]
-        if board in self.finished_boards:
-            return
-        # read post time of the *last* post we just opened
-        dt_str = response.css('#main-content > div:nth-child(4) > span.article-meta-value::text').get()
-        post_dt = datetime.strptime(dt_str, '%a %b %d %H:%M:%S %Y').replace(tzinfo=self.UTC8)
 
-        if datetime.now(self.UTC8) - post_dt > self.MAX_AGE :
-            self.logger.info(f"[{board}] reached 24‑hour cutoff; stopping this board")
+        # ── 1. Extract and parse the post time ───────────────────────────────
+        dt_str = response.css(
+            '#main-content > div:nth-child(4) > span.article-meta-value::text'
+        ).get()
+        post_dt = datetime.strptime(
+                dt_str, '%a %b %d %H:%M:%S %Y'
+            ).replace(tzinfo=self.UTC8)
+
+        # ── 2. Age check: just skip if the post is too old ───────────────────
+        if datetime.now(self.UTC8) - post_dt > self.MAX_AGE:
             self.finished_boards.add(board)
-            if len(self.finished_boards) >= len(self.boards):
-                raise CloseSpider(reason="Finished Parsing All Posts in the Past 24 hours.")
             return
-        else:
-            post_dt = datetime.strptime(dt_str, '%a %b %d %H:%M:%S %Y').replace(tzinfo=pytz.timezone('Asia/Taipei'))
 
-            item = pttItem()
-            item['board'] = board
-            item['title'] = response.css('#main-content > div:nth-child(3) > span.article-meta-value::text').get()
-            item['author'] = response.css('#main-content > div:nth-child(1) > span.article-meta-value::text').get()
-            item['date'] = post_dt.strftime('%a %b %d %H:%M:%S %Y')
-            item['content'] = response.xpath("//*[@id='main-content']/text()[not(ancestor::div[contains(@class, 'push')]) and normalize-space()]").getall()
+        # ── 3. Build and yield the item ─────────────────────────────────────
+        item = pttItem()
+        item['board']   = board
+        item['title']   = response.css(
+            '#main-content > div:nth-child(3) > span.article-meta-value::text'
+        ).get()
+        item['author']  = response.css(
+            '#main-content > div:nth-child(1) > span.article-meta-value::text'
+        ).get()
+        item['date']    = post_dt.strftime('%a %b %d %H:%M:%S %Y')
+        item['content'] = response.xpath(
+            "//*[@id='main-content']/text()[not(ancestor::div[contains(@class,'push')]) "
+            "and normalize-space()]"
+        ).getall()
 
+        ip_line  = response.xpath("//span[contains(text(),'來自:')]/text()").get()
+        ip_match = re.search(r'來自:\s*([\d.]+)', ip_line or '')
+        item['ip'] = ip_match.group(1) if ip_match else None
 
-            ip_line = response.xpath("//span[contains(text(), '來自:')]/text()").get()
-            ip_match = re.search(r'來自:\s*([\d.]+)', ip_line or '')
-            ip = ip_match.group(1) if ip_match else None
-            item['ip'] = ip
+        comments, total_score = [], 0
+        for push in response.xpath('//div[@class="push"]'):
+            tag   = push.css('span.push-tag::text').get()
+            user  = push.css('span.push-userid::text').get()
+            text  = push.css('span.push-content::text').get()
+            if not all([tag, user, text]):
+                continue
 
-            comments = []
-            total_score = 0
-            for comment in response.xpath('//div[@class="push"]'):
-                push_tag = comment.css('span.push-tag::text').get()
-                push_user = comment.css('span.push-userid::text').get()
-                push_content = comment.css('span.push-content::text').get()
+            if '推' in tag:
+                score, status = 1, '推'
+            elif '噓' in tag:
+                score, status = -1, '噓'
+            else:
+                score, status = 0, '→'
 
-                if push_tag is None or push_user is None or push_content is None:
-                    continue  # skip broken comment block
+            total_score += score
+            comments.append({'user': user, 'content': text.strip(': ').strip(),
+                             'score': score, 'status': status})
 
-                if '推' in push_tag:
-                    score = 1
-                    comment_status = '推'
-                elif '噓' in push_tag:
-                    score = -1
-                    comment_status = '噓'
-                else:
-                    score = 0
-                    comment_status = '→'
+        item['comments'] = comments
+        item['score']    = total_score
+        item['url']      = response.url
+        print(f'yeilding item: {item["title"]} from {item['board']}')
+        yield item
 
-                total_score += score
-                comments.append({
-                    'user': push_user,
-                    'content': push_content.strip(': ').strip(),
-                    'score': score,
-                    'status': comment_status
-                })
-
-            item['comments'] = comments
-            item['score'] = total_score
-            item['url'] = response.url
-            yield item
 
 
 
