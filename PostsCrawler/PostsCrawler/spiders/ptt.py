@@ -1,3 +1,4 @@
+from http.client import responses
 
 from scrapy import FormRequest
 from scrapy.exceptions import CloseSpider
@@ -14,7 +15,7 @@ class pttSpider(scrapy.Spider):
     allowed_domains = ["ptt.cc"]
     _retries = 0
     UTC8 = ZoneInfo("Asia/Taipei")
-    MAX_AGE = timedelta(hours=1)
+    MAX_AGE = timedelta(hours=24)
 
     custom_settings = {
         'DOWNLOAD_DELAY': 0.05,
@@ -34,6 +35,8 @@ class pttSpider(scrapy.Spider):
 
 
     def parse(self, response):
+
+
         board = response.meta.get("board")       # defensive lookup
         if board in self.finished_boards:
             self.logger.info(f'board: {board} is finished')
@@ -54,38 +57,47 @@ class pttSpider(scrapy.Spider):
             return                                 # nothing else to do yet
 
         # ---------- 2. Parse the index ----------
-        # replace the titles line in parse()
-        hrefs = response.xpath('//div[@class="r-ent"][following-sibling::div[@class="r-list-sep"]]/div[@class="title"]/a/@href') \
-            if response.xpath("//div[@class='r-list-sep']") \
-            else response.xpath("//div[@class='title']/a/@href")
+
+        if response.xpath("//div[@class='r-list-sep']"):
+            raw_rows = response.xpath(
+                '//div[@class="r-ent"][following-sibling::div[@class="r-list-sep"]]')
+        else:
+            raw_rows = response.xpath('//div[@class="r-ent"]')
 
 
-        for href in hrefs:
-            if board in self.finished_boards:
-                break                      # we decided to stop while iterating titles
-            yield scrapy.Request(
-                response.urljoin(href.get()),
-                callback=self.parse_post,
-                meta={"board": board}
-            )
 
-        # ⬇ run this only if we are still crawling this board
-        if board not in self.finished_boards:
-            next_page = response.xpath(
-                '//*[@id="action-bar-container"]/div/div[2]/a[2]/@href'
-            ).get()
-            if next_page:
-                yield scrapy.Request(
-                    response.urljoin(next_page),
-                    callback=self.parse,
-                    meta=response.meta
-                )
+        next_page = response.xpath(
+            '//*[@id="action-bar-container"]/div/div[2]/a[2]/@href'
+        ).get()
 
+        next_page = response.urljoin(next_page) if next_page else None
+
+        rows = [
+            (row, row.xpath('./div[@class="title"]/a/@href').get())
+            for row in raw_rows
+        ]
+        rows = [(r, h) for (r, h) in rows if h]           # drop deleted posts
+
+
+        for idx, (_, href) in enumerate(rows):
+            meta = {"board": board, "next_page" : None }
+            if idx == len(rows) - 1 and next_page:
+                print(f'has next page: {next_page}')
+                meta["next_page"] = next_page           # ⬅ baton
+            yield response.follow(href, callback=self.parse_post, meta=meta)
+
+
+
+
+    def parse_post(self, response):
         if len(self.finished_boards) >= len(self.boards):
             raise CloseSpider(reason= 'Finished Parsing All Posts from the past 24 hours.')
 
-    def parse_post(self, response):
         board = response.meta["board"]
+
+        next_page = response.meta["next_page"] if response.meta["next_page"] else None
+        print(f'next page: {next_page}')
+
 
         # ── 1. Extract and parse the post time ───────────────────────────────
         dt_str = response.css(
@@ -96,7 +108,9 @@ class pttSpider(scrapy.Spider):
             ).replace(tzinfo=self.UTC8)
 
         # ── 2. Age check: just skip if the post is too old ───────────────────
+        print('age checking...')
         if datetime.now(self.UTC8) - post_dt > self.MAX_AGE:
+            print(f'finished boards:{self.finished_boards}')
             self.finished_boards.add(board)
             return
 
@@ -141,10 +155,14 @@ class pttSpider(scrapy.Spider):
         item['comments'] = comments
         item['score']    = total_score
         item['url']      = response.url
-        print(f'yeilding item: {item["title"]} from {item['board']}')
+        print(f'yielding item: {item["title"]} from {item['board']}')
         yield item
 
-
-
-
-
+        if next_page and board not in self.finished_boards:
+            print('proceeding to next page...')
+            yield response.follow(
+                next_page,
+                callback=self.parse,
+                meta={"board": board})
+        else:
+            return
