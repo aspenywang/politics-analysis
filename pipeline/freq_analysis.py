@@ -52,9 +52,9 @@ def main():
             # gather all tokens
             tokens = []
             for seg in post.get('tokenized_segments', []):
-                tokens.extend(tok for tok in seg if tok.strip())
+                tokens.extend(tok for tok in seg if tok.strip() and  len(tok) >=2)
             for com in post.get('tokenized_comments', {}).values():
-                tokens.extend(tok for tok in com if tok.strip())
+                tokens.extend(tok for tok in com if tok.strip() and  len(tok) >=2)
 
             # split into Chinese vs non‑Chinese
             for tok in tokens:
