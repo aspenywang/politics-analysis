@@ -3,7 +3,7 @@ import json
 from snownlp import SnowNLP
 import csv
 
-from pipeline.preprocess import process_post
+from pipeline.preprocess.preprocess import process_post
 
 # Suppose you have a list of tokens (or short text snippets) in `tokens`
 tokens = json.load(process_post())
@@ -23,7 +23,7 @@ for tok in set(tokens):                  # remove duplicates
         label = "neutral"
     lexicon.append((tok, score, label))
 
-# Write out CSV: token,score,label
+# Write archive CSV: token,score,label
 with open("sentiment_lexicon.csv","w",encoding="utf-8",newline="") as f:
     writer = csv.writer(f)
     writer.writerow(["token","score","label"])

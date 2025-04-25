@@ -20,7 +20,7 @@ def main():
     )
     parser.add_argument(
         '--input', '-i',
-        default='processed_posts.jsonl',
+        default='ptt_cleaned.jsonl',
         help="Input JSONL file (default: processed_posts.jsonl)"
     )
     parser.add_argument(
